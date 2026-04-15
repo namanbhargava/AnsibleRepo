@@ -1,0 +1,17 @@
+---
+# This is the main playbook. Run it with:
+#   ansible-playbook site.yml --ask-vault-pass
+#
+# To target a single machine:
+#   ansible-playbook site.yml --limit node1 --ask-vault-pass
+
+- name: Deploy k3s + Rancher on all k3s nodes
+  hosts: k3s_nodes        # Matches the group name in inventory/hosts.ini
+  gather_facts: true      # REQUIRED: populates ansible_default_ipv4.address
+                          # which is used to build the sslip.io hostname
+  serial: 1               # Process one machine at a time (safer for first runs).
+                          # Remove this line to run all machines in parallel.
+
+  roles:
+    - role: k3s           # Step 1: Install k3s cluster and wait for it to be ready
+    - role: rancher       # Step 2: Install Helm, cert-manager, and Rancher UI

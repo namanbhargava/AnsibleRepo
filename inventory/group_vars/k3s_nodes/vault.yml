@@ -1,0 +1,7 @@
+---
+# IMPORTANT: This file should be encrypted with Ansible Vault before committing.
+# Run: ansible-vault encrypt inventory/group_vars/k3s_nodes/vault.yml
+#
+# Rancher bootstrap password — used only on first login.
+# Minimum 12 characters required by Rancher.
+rancher_bootstrap_password: "ChangeMe!SuperSecret42"

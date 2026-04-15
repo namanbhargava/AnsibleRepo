@@ -1,0 +1,214 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 1: HELM
+# Helm is the "package manager" for Kubernetes — it installs apps (called
+# "charts") into the cluster with a single command, handling all the k8s
+# manifests for you.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Check if the correct version of Helm is already installed
+  ansible.builtin.command:
+    cmd: helm version --short
+  register: helm_installed_version
+  failed_when: false   # Don't fail if helm doesn't exist yet (rc != 0 is OK)
+  changed_when: false
+
+- name: Download Helm archive
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: "/tmp/helm-{{ helm_version }}.tar.gz"
+    mode: "0644"
+    force: false
+  when: helm_version not in (helm_installed_version.stdout | default(''))
+
+- name: Extract Helm binary from archive
+  ansible.builtin.unarchive:
+    src: "/tmp/helm-{{ helm_version }}.tar.gz"
+    dest: /tmp/
+    remote_src: true          # The archive is on the remote machine, not local
+    creates: /tmp/linux-amd64/helm   # Skip if already extracted
+  when: helm_version not in (helm_installed_version.stdout | default(''))
+
+- name: Copy Helm binary to {{ helm_install_dir }}
+  ansible.builtin.copy:
+    src: /tmp/linux-amd64/helm
+    dest: "{{ helm_install_dir }}/helm"
+    mode: "0755"
+    remote_src: true
+  when: helm_version not in (helm_installed_version.stdout | default(''))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 2: KUBECONFIG
+# Helm and kubectl need to know which cluster to talk to. The kubeconfig file
+# at /etc/rancher/k3s/k3s.yaml contains the cluster URL, credentials, etc.
+# We pass it via environment variable so every subsequent task uses it.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Set KUBECONFIG fact for use in all subsequent tasks
+  ansible.builtin.set_fact:
+    kubeconfig_env:
+      KUBECONFIG: "{{ kubeconfig_path }}"
+  # kubeconfig_env is now a dict we pass to "environment:" on every helm/kubectl task
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3: CERT-MANAGER
+# cert-manager is a Kubernetes add-on that automates TLS certificate lifecycle.
+# Rancher requires it to manage the certificates it uses for HTTPS.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Add Jetstack Helm repository (cert-manager source)
+  ansible.builtin.command:
+    cmd: helm repo add jetstack https://charts.jetstack.io
+  environment: "{{ kubeconfig_env }}"
+  register: repo_add_jetstack
+  changed_when: "'already exists' not in repo_add_jetstack.stdout"
+  failed_when: >
+    repo_add_jetstack.rc != 0 and
+    'already exists' not in repo_add_jetstack.stderr
+
+- name: Update Helm repository cache
+  ansible.builtin.command:
+    cmd: helm repo update
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+
+- name: Apply cert-manager CRDs (CustomResourceDefinitions)
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl apply -f
+      https://github.com/cert-manager/cert-manager/releases/download/{{ cert_manager_version }}/cert-manager.crds.yaml
+  environment: "{{ kubeconfig_env }}"
+  register: crds_result
+  changed_when: "'configured' in crds_result.stdout or 'created' in crds_result.stdout"
+  # CRDs extend the Kubernetes API — they define new resource types like
+  # "Certificate" and "ClusterIssuer". We apply them separately from the Helm
+  # chart to avoid issues when upgrading (Helm doesn't handle CRD upgrades well).
+
+- name: Create cert-manager namespace
+  ansible.builtin.command:
+    cmd: k3s kubectl create namespace {{ cert_manager_namespace }}
+  environment: "{{ kubeconfig_env }}"
+  register: ns_cert
+  failed_when: ns_cert.rc != 0 and 'already exists' not in ns_cert.stderr
+  changed_when: ns_cert.rc == 0
+
+- name: Install cert-manager via Helm
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install cert-manager jetstack/cert-manager
+      --namespace {{ cert_manager_namespace }}
+      --version {{ cert_manager_version }}
+      --set installCRDs=false
+      --wait
+      --timeout 5m0s
+  environment: "{{ kubeconfig_env }}"
+  register: cert_manager_install
+  changed_when: "'STATUS: deployed' in cert_manager_install.stdout"
+  # "upgrade --install": installs if not present, upgrades if already installed.
+  # "--wait": blocks until all pods are Running before the task completes.
+
+- name: Wait for cert-manager deployment to be ready
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl rollout status deployment/cert-manager
+      -n {{ cert_manager_namespace }}
+      --timeout=300s
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+
+- name: Wait for cert-manager webhook to be ready
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl rollout status deployment/cert-manager-webhook
+      -n {{ cert_manager_namespace }}
+      --timeout=300s
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+  # The webhook must be fully up before Rancher installs, because Rancher
+  # creates Certificate resources and the webhook validates them.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4: RANCHER
+# Rancher is a Kubernetes management platform. We install it via Helm into the
+# "cattle-system" namespace. It uses Traefik (k3s's built-in ingress) to expose
+# its UI, and cert-manager to handle its HTTPS certificate.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Add Rancher stable Helm repository
+  ansible.builtin.command:
+    cmd: helm repo add rancher-stable {{ rancher_chart_repo }}
+  environment: "{{ kubeconfig_env }}"
+  register: repo_add_rancher
+  changed_when: "'already exists' not in repo_add_rancher.stdout"
+  failed_when: >
+    repo_add_rancher.rc != 0 and
+    'already exists' not in repo_add_rancher.stderr
+
+- name: Update Helm repository cache (after adding Rancher repo)
+  ansible.builtin.command:
+    cmd: helm repo update
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+
+- name: Create cattle-system namespace
+  ansible.builtin.command:
+    cmd: k3s kubectl create namespace {{ rancher_namespace }}
+  environment: "{{ kubeconfig_env }}"
+  register: ns_cattle
+  failed_when: ns_cattle.rc != 0 and 'already exists' not in ns_cattle.stderr
+  changed_when: ns_cattle.rc == 0
+
+- name: Install Rancher via Helm
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install rancher rancher-stable/rancher
+      --namespace {{ rancher_namespace }}
+      --version {{ rancher_version }}
+      --set hostname={{ rancher_hostname }}
+      --set bootstrapPassword={{ rancher_bootstrap_password }}
+      --set ingress.tls.source=rancher
+      --set ingress.ingressClassName={{ rancher_ingress_class }}
+      --wait
+      --timeout 10m0s
+  environment: "{{ kubeconfig_env }}"
+  register: rancher_install
+  changed_when: "'STATUS: deployed' in rancher_install.stdout"
+  no_log: true
+  # "no_log: true" prevents the bootstrap password from appearing in Ansible output.
+  # "ingress.tls.source=rancher" → Rancher generates its own self-signed CA.
+  # "ingress.ingressClassName=traefik" → use k3s's built-in Traefik ingress.
+
+- name: Wait for Rancher deployment to fully roll out
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl rollout status deployment/rancher
+      -n {{ rancher_namespace }}
+      --timeout=600s
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: VERIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Wait for Rancher HTTPS endpoint to become available
+  ansible.builtin.uri:
+    url: "https://{{ rancher_hostname }}/ping"
+    validate_certs: false     # Rancher's cert is self-signed — skip CA validation
+    status_code: 200
+    timeout: 30
+  register: rancher_ping
+  retries: 20
+  delay: 15
+  until: rancher_ping.status == 200
+  # /ping is Rancher's built-in health endpoint — returns "pong" when fully up.
+
+- name: Print Rancher access information
+  ansible.builtin.debug:
+    msg:
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "  Rancher is ready!"
+      - "  URL: https://{{ rancher_hostname }}"
+      - "  Username: admin"
+      - "  Password: <your rancher_bootstrap_password from vault.yml>"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

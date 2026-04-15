@@ -1,0 +1,11 @@
+---
+# Handlers are tasks that only run when "notified" by another task.
+# They run once at the END of a play, even if notified multiple times.
+# This prevents unnecessary restarts (e.g. if 3 tasks each notify a restart,
+# the service only restarts once).
+
+- name: restart k3s
+  ansible.builtin.systemd:
+    name: k3s
+    state: restarted
+    daemon_reload: true

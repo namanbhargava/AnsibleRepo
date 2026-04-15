@@ -1,0 +1,6 @@
+---
+# These are the role's own default values.
+# They are overridden by group_vars (group_vars always wins over role defaults).
+k3s_version: "v1.29.4+k3s1"
+k3s_config_dir: "/etc/rancher/k3s"
+kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"

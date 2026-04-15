@@ -1,0 +1,11 @@
+---
+helm_version: "v3.15.1"
+helm_install_dir: "/usr/local/bin"
+cert_manager_version: "v1.14.5"
+cert_manager_namespace: "cert-manager"
+rancher_version: "2.8.4"
+rancher_namespace: "cattle-system"
+rancher_chart_repo: "https://releases.rancher.com/server-charts/stable"
+rancher_ingress_class: "traefik"
+rancher_hostname: "{{ ansible_default_ipv4.address }}.sslip.io"
+rancher_bootstrap_password: "admin"   # Always override via vault.yml
