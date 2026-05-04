@@ -25,21 +25,3 @@ rancher_ingress_class: "traefik"
 # ansible_default_ipv4.address is automatically detected by Ansible from the machine.
 # So if the machine IP is 10.0.0.5, the hostname becomes: 10.0.0.5.sslip.io
 rancher_hostname: "{{ ansible_default_ipv4.address }}.sslip.io"
-
-# ─── SSM / Tunnel access ───────────────────────────────────────────────────────
-# When accessing Rancher via SSM tunnel or port-forward (e.g. localhost:8443),
-# the browser cannot reach the private sslip.io hostname directly for WebSocket
-# connections (log streaming, shell, etc.).
-#
-# Set rancher_server_url to the URL your BROWSER uses to reach Rancher.
-# The cattle-cluster-agent will always use the internal Kubernetes service URL
-# regardless of this setting.
-#
-# Examples:
-#   Direct access (default): "https://{{ rancher_hostname }}"
-#   SSM tunnel on port 8443: "https://localhost:8443"
-rancher_server_url: "https://{{ rancher_hostname }}"
-
-# Internal Kubernetes service URL used by cattle-cluster-agent.
-# This stays constant regardless of how you access Rancher externally.
-rancher_internal_url: "https://rancher.cattle-system.svc.cluster.local"
