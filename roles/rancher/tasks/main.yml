@@ -188,7 +188,148 @@
   changed_when: false
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 5: VERIFICATION
+# SECTION 5: MULTI-SAN TLS CERTIFICATE
+#
+# Problem: Rancher's auto-generated cert covers only the sslip.io hostname.
+# When accessed via SSM tunnel (localhost:8443), the browser sees a hostname
+# mismatch and silently blocks WebSocket connections (used for log streaming).
+#
+# Fix: Replace the Rancher TLS secret with a self-signed cert that includes
+# BOTH the sslip.io hostname AND localhost as Subject Alternative Names (SANs).
+# This way the cert is valid regardless of how you access Rancher.
+#
+# The cert is generated with openssl on the remote machine so no local tools
+# are needed. The CA cert is printed at the end so you can import it into
+# your browser once and trust all future certs from this CA.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Create directory for TLS cert generation
+  ansible.builtin.file:
+    path: /tmp/rancher-tls
+    state: directory
+    mode: "0700"
+
+- name: Generate CA private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out /tmp/rancher-tls/ca.key 4096
+    creates: /tmp/rancher-tls/ca.key
+
+- name: Generate self-signed CA certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -new -nodes
+      -key /tmp/rancher-tls/ca.key
+      -sha256 -days 3650
+      -out /tmp/rancher-tls/ca.crt
+      -subj "/CN=Rancher-Local-CA/O=Local"
+    creates: /tmp/rancher-tls/ca.crt
+
+- name: Generate Rancher TLS private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out /tmp/rancher-tls/tls.key 2048
+    creates: /tmp/rancher-tls/tls.key
+
+- name: Write OpenSSL SAN config (covers both sslip.io hostname and localhost)
+  ansible.builtin.copy:
+    dest: /tmp/rancher-tls/san.cnf
+    mode: "0600"
+    content: |
+      [req]
+      req_extensions = v3_req
+      distinguished_name = req_distinguished_name
+      [req_distinguished_name]
+      [v3_req]
+      subjectAltName = @alt_names
+      [alt_names]
+      DNS.1 = {{ rancher_hostname }}
+      DNS.2 = localhost
+      IP.1  = 127.0.0.1
+      IP.2  = {{ ansible_default_ipv4.address }}
+
+- name: Generate Certificate Signing Request (CSR)
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key /tmp/rancher-tls/tls.key
+      -out /tmp/rancher-tls/tls.csr
+      -subj "/CN={{ rancher_hostname }}/O=Local"
+      -config /tmp/rancher-tls/san.cnf
+    creates: /tmp/rancher-tls/tls.csr
+
+- name: Sign the CSR with our CA to produce the TLS certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in /tmp/rancher-tls/tls.csr
+      -CA /tmp/rancher-tls/ca.crt
+      -CAkey /tmp/rancher-tls/ca.key
+      -CAcreateserial
+      -out /tmp/rancher-tls/tls.crt
+      -days 3650
+      -sha256
+      -extfile /tmp/rancher-tls/san.cnf
+      -extensions v3_req
+    creates: /tmp/rancher-tls/tls.crt
+
+- name: Replace tls-rancher-ingress secret with the multi-SAN certificate
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl create secret tls tls-rancher-ingress
+      --cert=/tmp/rancher-tls/tls.crt
+      --key=/tmp/rancher-tls/tls.key
+      --namespace {{ rancher_namespace }}
+      --dry-run=client -o yaml
+  environment: "{{ kubeconfig_env }}"
+  register: tls_secret_yaml
+  changed_when: false
+  # "--dry-run=client -o yaml" generates the secret manifest without applying it.
+  # We pipe it to kubectl apply in the next task so the operation is idempotent
+  # (apply updates an existing secret; create would fail if it already exists).
+
+- name: Apply the TLS secret (create or update)
+  ansible.builtin.shell:
+    cmd: >
+      echo '{{ tls_secret_yaml.stdout }}' |
+      k3s kubectl apply -f -
+  environment: "{{ kubeconfig_env }}"
+  register: tls_apply
+  changed_when: "'configured' in tls_apply.stdout or 'created' in tls_apply.stdout"
+
+- name: Restart Rancher pods to pick up new certificate
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl rollout restart deployment/rancher
+      -n {{ rancher_namespace }}
+  environment: "{{ kubeconfig_env }}"
+  changed_when: true
+
+- name: Wait for Rancher to come back up after cert rotation
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl rollout status deployment/rancher
+      -n {{ rancher_namespace }}
+      --timeout=300s
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+
+- name: Read CA certificate for browser import
+  ansible.builtin.slurp:
+    src: /tmp/rancher-tls/ca.crt
+  register: ca_cert_content
+
+- name: Save CA certificate locally for browser import
+  ansible.builtin.copy:
+    content: "{{ ca_cert_content.content | b64decode }}"
+    dest: "./rancher-ca.crt"
+    mode: "0644"
+  delegate_to: localhost
+  # "delegate_to: localhost" runs this task on YOUR machine (the Ansible control node),
+  # not on the remote machine. This saves the CA cert locally so you can import it
+  # into your browser once — then all Rancher HTTPS and WebSocket connections will
+  # be trusted automatically.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6: VERIFICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 - name: Wait for Rancher HTTPS endpoint to become available
@@ -208,7 +349,12 @@
     msg:
       - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
       - "  Rancher is ready!"
-      - "  URL: https://{{ rancher_hostname }}"
-      - "  Username: admin"
-      - "  Password: <your rancher_bootstrap_password from vault.yml>"
+      - "  Direct URL : https://{{ rancher_hostname }}"
+      - "  SSM tunnel : https://localhost:<tunnel_port>"
+      - "  Username   : admin"
+      - "  Password   : <your rancher_bootstrap_password from vault.yml>"
+      - ""
+      - "  A CA certificate has been saved to: ./rancher-ca.crt"
+      - "  Import it into your browser to trust Rancher's HTTPS and"
+      - "  WebSocket connections without warnings."
       - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
