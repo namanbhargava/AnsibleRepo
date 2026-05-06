@@ -17,6 +17,18 @@
     kubeconfig_env:
       KUBECONFIG: "{{ kubeconfig_path }}"
 
+# ─── HTTP → HTTPS redirect ────────────────────────────────────────────────────
+# Only needed if NLB has a port 80 listener. Users who type http:// get
+# redirected to https:// automatically (301 permanent redirect).
+
+- name: Apply HTTP to HTTPS redirect middleware and IngressRoute
+  ansible.builtin.shell:
+    cmd: "k3s kubectl apply -f -"
+    stdin: "{{ lookup('template', 'http-redirect.yml.j2') }}"
+  environment: "{{ kubeconfig_env }}"
+  register: http_redirect
+  changed_when: "'configured' in http_redirect.stdout or 'created' in http_redirect.stdout"
+
 # ─── Grafana Middleware (strips /grafana prefix) ───────────────────────────────
 
 - name: Apply Grafana strip-prefix middleware

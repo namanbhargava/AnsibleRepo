@@ -1,0 +1,33 @@
+---
+# Traefik Middleware: redirects all HTTP requests to HTTPS.
+# Applied automatically to any request that arrives on port 80.
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-to-https
+  namespace: default
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true   # 301 redirect — browsers cache this
+
+---
+# IngressRoute: catches all HTTP traffic on port 80 and applies the redirect.
+# Uses Traefik's native CRD (IngressRoute) instead of standard Ingress
+# because standard Ingress cannot apply middleware to an HTTP entrypoint.
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: http-to-https-redirect
+  namespace: default
+spec:
+  entryPoints:
+    - web          # "web" is Traefik's name for port 80 in k3s
+  routes:
+    - match: "Host(`{{ app_hostname }}`)"
+      kind: Rule
+      middlewares:
+        - name: redirect-to-https
+      services:
+        - name: noop@internal   # No real backend — redirect happens before forwarding
+          kind: TraefikService
