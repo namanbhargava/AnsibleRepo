@@ -1,0 +1,25 @@
+# Grafana needs its own Ingress in its own namespace.
+# It also requires Grafana to be configured with GF_SERVER_ROOT_URL and
+# GF_SERVER_SERVE_FROM_SUB_PATH=true so its internal links use /grafana as base.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: "{{ grafana_namespace }}"
+  annotations:
+    kubernetes.io/ingress.class: "{{ rancher_ingress_class }}"
+    # Rewrite /grafana → / before hitting Grafana's service.
+    # Without this Grafana receives /grafana/... but expects /.
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ grafana_namespace }}-grafana-stripprefix@kubernetescrd"
+spec:
+  rules:
+  - host: "{{ app_hostname }}"
+    http:
+      paths:
+      - path: /grafana
+        pathType: Prefix
+        backend:
+          service:
+            name: "{{ grafana_service }}"
+            port:
+              number: {{ grafana_port }}

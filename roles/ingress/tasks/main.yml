@@ -1,0 +1,61 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATH-BASED INGRESS FOR ALL APPS
+#
+# Applies Traefik Ingress resources so all apps are accessible via
+# the shared hostname (test.dev.aws.myapp.net) with path-based routing.
+#
+# Routing table:
+#   /api/v1   → backend-app   (prefix stripped before reaching service)
+#   /plan     → frontend-app
+#   /grafana  → Grafana       (prefix stripped, Grafana must have sub_path=true)
+#   /         → Rancher       (Rancher Helm install owns this — not managed here)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: Set KUBECONFIG fact
+  ansible.builtin.set_fact:
+    kubeconfig_env:
+      KUBECONFIG: "{{ kubeconfig_path }}"
+
+# ─── Grafana Middleware (strips /grafana prefix) ───────────────────────────────
+
+- name: Apply Grafana strip-prefix middleware
+  ansible.builtin.shell:
+    cmd: "k3s kubectl apply -f -"
+    stdin: "{{ lookup('template', 'grafana-middleware.yml.j2') }}"
+  environment: "{{ kubeconfig_env }}"
+  register: grafana_mw
+  changed_when: "'configured' in grafana_mw.stdout or 'created' in grafana_mw.stdout"
+
+# ─── Apps Ingress (backend + frontend) ────────────────────────────────────────
+
+- name: Apply apps ingress (backend-app + frontend-app)
+  ansible.builtin.shell:
+    cmd: "k3s kubectl apply -f -"
+    stdin: "{{ lookup('template', 'apps-ingress.yml.j2') }}"
+  environment: "{{ kubeconfig_env }}"
+  register: apps_ingress
+  changed_when: "'configured' in apps_ingress.stdout or 'created' in apps_ingress.stdout"
+
+# ─── Grafana Ingress ──────────────────────────────────────────────────────────
+
+- name: Apply Grafana ingress
+  ansible.builtin.shell:
+    cmd: "k3s kubectl apply -f -"
+    stdin: "{{ lookup('template', 'grafana-ingress.yml.j2') }}"
+  environment: "{{ kubeconfig_env }}"
+  register: grafana_ingress
+  changed_when: "'configured' in grafana_ingress.stdout or 'created' in grafana_ingress.stdout"
+
+# ─── Verify ───────────────────────────────────────────────────────────────────
+
+- name: Show all ingress resources
+  ansible.builtin.command:
+    cmd: k3s kubectl get ingress -A
+  environment: "{{ kubeconfig_env }}"
+  changed_when: false
+  register: ingress_list
+
+- name: Print ingress summary
+  ansible.builtin.debug:
+    var: ingress_list.stdout_lines

@@ -1,0 +1,40 @@
+# Jinja2 template — Ansible fills in the {{ variables }} before applying to k8s.
+# This single Ingress resource covers all path-based routing for the apps.
+# Traefik matches rules top-to-bottom; more specific paths take priority.
+#
+# Traffic flow:
+#   NLB:443 (TLS/ACM) → EC2:80 → Traefik → this Ingress → app services
+#
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: apps-ingress
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: "{{ rancher_ingress_class }}"
+    # Strip the path prefix before forwarding to the backend service.
+    # e.g. /api/v1/users → /users reaching backend-app
+    traefik.ingress.kubernetes.io/router.middlewares: "default-strip-prefixes@kubernetescrd"
+spec:
+  rules:
+  - host: "{{ app_hostname }}"
+    http:
+      paths:
+
+      # ── Backend app (/api/v1) ────────────────────────────────────────────────
+      - path: /api/v1
+        pathType: Prefix
+        backend:
+          service:
+            name: "{{ backend_app_service }}"
+            port:
+              number: {{ backend_app_port }}
+
+      # ── Frontend app (/plan) ─────────────────────────────────────────────────
+      - path: /plan
+        pathType: Prefix
+        backend:
+          service:
+            name: "{{ frontend_app_service }}"
+            port:
+              number: {{ frontend_app_port }}

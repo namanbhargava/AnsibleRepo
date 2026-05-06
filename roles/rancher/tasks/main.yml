@@ -166,7 +166,7 @@
       --version {{ rancher_version }}
       --set hostname={{ rancher_hostname }}
       --set bootstrapPassword={{ rancher_bootstrap_password }}
-      --set ingress.tls.source=rancher
+      --set tls={{ rancher_tls_source }}
       --set ingress.ingressClassName={{ rancher_ingress_class }}
       --wait
       --timeout 10m0s
@@ -174,9 +174,8 @@
   register: rancher_install
   changed_when: "'STATUS: deployed' in rancher_install.stdout"
   no_log: true
-  # "no_log: true" prevents the bootstrap password from appearing in Ansible output.
-  # "ingress.tls.source=rancher" → Rancher generates its own self-signed CA.
-  # "ingress.ingressClassName=traefik" → use k3s's built-in Traefik ingress.
+  # tls=external → Rancher creates an HTTP ingress only; TLS is handled by NLB/ACM.
+  # tls=rancher  → Rancher generates its own self-signed cert (for direct access).
 
 - name: Wait for Rancher deployment to fully roll out
   ansible.builtin.command:

@@ -1,0 +1,14 @@
+# Traefik Middleware: strips /grafana prefix before forwarding to Grafana pod.
+# Without this Grafana gets /grafana/api/... but it expects /api/...
+#
+# "Middleware" is a Traefik concept — it transforms requests before they hit
+# the backend. This one specifically removes a path prefix.
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: grafana-stripprefix
+  namespace: "{{ grafana_namespace }}"
+spec:
+  stripPrefix:
+    prefixes:
+      - /grafana

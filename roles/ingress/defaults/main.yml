@@ -1,0 +1,16 @@
+---
+app_hostname: "test.dev.aws.myapp.net"
+rancher_ingress_class: "traefik"
+
+# App service names and ports — override in group_vars if your services differ
+backend_app_service: "backend-app"
+backend_app_port: 8080
+backend_app_namespace: "default"
+
+frontend_app_service: "frontend-app"
+frontend_app_port: 80
+frontend_app_namespace: "default"
+
+grafana_service: "grafana"
+grafana_port: 3000
+grafana_namespace: "monitoring"
