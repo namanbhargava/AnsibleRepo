@@ -158,24 +158,49 @@
   failed_when: ns_cattle.rc != 0 and 'already exists' not in ns_cattle.stderr
   changed_when: ns_cattle.rc == 0
 
+- name: Create X-Forwarded-Proto middleware in cattle-system
+  ansible.builtin.shell:
+    cmd: "k3s kubectl apply -f -"
+    stdin: |
+      apiVersion: traefik.containo.us/v1alpha1
+      kind: Middleware
+      metadata:
+        name: https-proto
+        namespace: cattle-system
+      spec:
+        headers:
+          customRequestHeaders:
+            X-Forwarded-Proto: "https"
+  environment: "{{ kubeconfig_env }}"
+  register: mw_result
+  changed_when: "'configured' in mw_result.stdout or 'created' in mw_result.stdout"
+  # NLB operates at Layer 4 and does not add X-Forwarded-Proto headers.
+  # Traefik receives plain HTTP from NLB and without this header Rancher
+  # sees HTTP and issues a redirect to HTTPS — causing an infinite loop.
+  # This middleware injects the header so Rancher treats the request as HTTPS.
+
+- name: Render Rancher Helm values file
+  ansible.builtin.template:
+    src: rancher-values.yml.j2
+    dest: /tmp/rancher-values.yml
+    mode: "0600"
+  # Using a values file instead of --set flags makes the annotation readable.
+  # Helm --set cannot express dotted annotation keys without complex escaping.
+
 - name: Install Rancher via Helm
   ansible.builtin.command:
     cmd: >
       helm upgrade --install rancher rancher-stable/rancher
       --namespace {{ rancher_namespace }}
       --version {{ rancher_version }}
-      --set hostname={{ rancher_hostname }}
       --set bootstrapPassword={{ rancher_bootstrap_password }}
-      --set tls={{ rancher_tls_source }}
-      --set ingress.ingressClassName={{ rancher_ingress_class }}
+      -f /tmp/rancher-values.yml
       --wait
       --timeout 10m0s
   environment: "{{ kubeconfig_env }}"
   register: rancher_install
   changed_when: "'STATUS: deployed' in rancher_install.stdout"
   no_log: true
-  # tls=external → Rancher creates an HTTP ingress only; TLS is handled by NLB/ACM.
-  # tls=rancher  → Rancher generates its own self-signed cert (for direct access).
 
 - name: Wait for Rancher deployment to fully roll out
   ansible.builtin.command:
