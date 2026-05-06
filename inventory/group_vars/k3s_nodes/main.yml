@@ -18,17 +18,18 @@ rancher_namespace: "cattle-system"
 rancher_chart_repo: "https://releases.rancher.com/server-charts/stable"
 rancher_ingress_class: "traefik"
 
-# The public hostname users type in their browser.
-# With NLB + ACM this is your internal DNS name.
-# With sslip.io fallback it is the machine IP.
-rancher_hostname: "test.dev.aws.myapp.net"
+# Rancher gets its OWN subdomain to avoid path conflicts with other apps.
+# Rancher internally uses /api, /v1, /v3 — sharing a hostname with apps
+# that also use /api would cause Traefik to mis-route Rancher's own API calls.
+rancher_hostname: "rancher.test.dev.aws.myapp.net"
 
-# "external" = TLS is terminated by the NLB (ACM cert). Rancher configures
-# an HTTP ingress and does not manage its own TLS certificate.
-# Change to "rancher" to let Rancher manage its own self-signed cert (e.g. for
-# direct sslip.io access without NLB).
+# "external" = TLS terminated by NLB (ACM cert). Rancher creates HTTP ingress.
+# "rancher"  = Rancher manages its own self-signed cert (for direct/SSM access).
 rancher_tls_source: "external"
 
-# ─── Shared ingress hostname (same for all apps) ───────────────────────────────
-# All path-based ingress rules use this hostname so Traefik routes correctly.
+# ─── App hostname (path-based routing for all non-Rancher apps) ───────────────
+# backend-app, frontend-app, and Grafana share this hostname with path routing.
+# Rancher is NOT on this hostname — it is on rancher_hostname above.
+# ACM cert must cover BOTH rancher_hostname and app_hostname.
+# A wildcard cert (*.test.dev.aws.myapp.net) covers both with one cert.
 app_hostname: "test.dev.aws.myapp.net"

@@ -24,7 +24,8 @@ spec:
   entryPoints:
     - web          # "web" is Traefik's name for port 80 in k3s
   routes:
-    - match: "Host(`{{ app_hostname }}`)"
+    # Redirect both the app hostname and the Rancher subdomain from HTTP → HTTPS
+    - match: "Host(`{{ app_hostname }}`) || Host(`{{ rancher_hostname }}`)"
       kind: Rule
       middlewares:
         - name: redirect-to-https
